@@ -1,0 +1,32 @@
+{
+  "name": "@profullstack/emailer",
+  "version": "1.0.0",
+  "description": "Mass emailer for Profullstack apps — Resend batch API with SMTP fallback",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "default": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "npx tsc -p tsconfig.build.json",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["email", "mass-emailer", "resend", "smtp", "newsletter"],
+  "author": "Profullstack Inc",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
