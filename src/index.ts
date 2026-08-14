@@ -44,6 +44,28 @@ export interface BulkSendResult {
   errors: Array<{ email: string; error: string }>;
 }
 
+/**
+ * Resend reports failures as a flat `{ statusCode, name, message }` body, not
+ * the `{ error: ... }` envelope. Reading only `error` turned every rejection
+ * into a bare `HTTP 422`, which hides the one thing worth knowing — why.
+ */
+function resendError(
+  body: unknown,
+  status: number,
+): string {
+  const data = (body ?? {}) as {
+    error?: string | { message?: string; name?: string };
+    message?: string;
+    name?: string;
+  };
+  const envelope = typeof data.error === 'string' ? data.error : data.error?.message;
+  const flat = data.message;
+  const detail = envelope ?? flat;
+  if (!detail) return `HTTP ${status}`;
+  const name = typeof data.error === 'object' ? data.error?.name : data.name;
+  return name ? `${name}: ${detail}` : detail;
+}
+
 async function resendSend(
   apiKey: string,
   payload: {
@@ -65,14 +87,8 @@ async function resendSend(
     },
     body: JSON.stringify(payload),
   });
-  const data = (await res.json()) as { id?: string; error?: { message?: string } | string };
-  if (!res.ok) {
-    const msg =
-      typeof data.error === 'string'
-        ? data.error
-        : (data.error as { message?: string })?.message ?? `HTTP ${res.status}`;
-    return { error: msg };
-  }
+  const data = (await res.json()) as { id?: string };
+  if (!res.ok) return { error: resendError(data, res.status) };
   return { id: data.id };
 }
 
@@ -87,7 +103,9 @@ async function resendBatch(
     reply_to?: string;
     headers?: Record<string, string>;
   }>,
-): Promise<Array<{ id?: string; error?: string }>> {
+): Promise<
+  { ok: true; results: Array<{ id?: string }> } | { ok: false; error: string; status: number }
+> {
   const res = await fetch('https://api.resend.com/emails/batch', {
     method: 'POST',
     headers: {
@@ -96,18 +114,9 @@ async function resendBatch(
     },
     body: JSON.stringify(emails),
   });
-  const data = (await res.json()) as {
-    data?: Array<{ id?: string }>;
-    error?: string | { message?: string };
-  };
-  if (!res.ok) {
-    const msg =
-      typeof data.error === 'string'
-        ? data.error
-        : (data.error as { message?: string })?.message ?? `HTTP ${res.status}`;
-    return emails.map(() => ({ error: msg }));
-  }
-  return (data.data ?? []).map((r) => ({ id: r.id }));
+  const data = (await res.json()) as { data?: Array<{ id?: string }> };
+  if (!res.ok) return { ok: false, error: resendError(data, res.status), status: res.status };
+  return { ok: true, results: data.data ?? [] };
 }
 
 export class Emailer {
@@ -170,13 +179,39 @@ export class Emailer {
           headers: opts.headers,
         }));
 
-        const results = await resendBatch(this.config.resendApiKey, emails);
-        for (let j = 0; j < results.length; j++) {
-          if (results[j].error) {
+        const batchRes = await resendBatch(this.config.resendApiKey, emails);
+
+        if (batchRes.ok) {
+          for (let j = 0; j < batch.length; j++) {
+            // Resend answers with one id per email, in order. A short array
+            // means those recipients were dropped, so count them as failures
+            // instead of silently shrinking the tally.
+            if (batchRes.results[j]?.id) {
+              result.sent++;
+            } else {
+              result.failed++;
+              result.errors.push({ email: batch[j], error: 'Resend returned no id' });
+            }
+          }
+        } else if (batchRes.status === 422) {
+          // Resend validates a batch as a unit: one unusable address rejects
+          // every email in the request. Retry singly so the good addresses
+          // still go out and the error lands on the one that caused it.
+          for (let j = 0; j < emails.length; j++) {
+            const single = await resendSend(this.config.resendApiKey, emails[j]);
+            if (single.error) {
+              result.failed++;
+              result.errors.push({ email: batch[j], error: single.error });
+            } else {
+              result.sent++;
+            }
+          }
+        } else {
+          // Auth, rate-limit or server errors apply to the whole request;
+          // retrying one at a time would just repeat them 100 times.
+          for (const email of batch) {
             result.failed++;
-            result.errors.push({ email: batch[j], error: results[j].error! });
-          } else {
-            result.sent++;
+            result.errors.push({ email, error: batchRes.error });
           }
         }
 
