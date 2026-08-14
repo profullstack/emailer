@@ -66,6 +66,43 @@ function resendError(
   return name ? `${name}: ${detail}` : detail;
 }
 
+const RATE_LIMIT_RETRIES = 5;
+
+/** How long to wait before a retry, preferring what the response tells us. */
+function retryDelayMs(res: { headers?: { get(name: string): string | null } }, attempt: number): number {
+  // An explicit `0` means "the window is already clear", which is different
+  // from the header being absent — so check for the header before converting,
+  // or `Number(null)` would silently read as a zero-second wait.
+  for (const name of ['retry-after', 'ratelimit-reset']) {
+    const raw = res.headers?.get(name);
+    if (raw === null || raw === undefined || raw === '') continue;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  }
+  return Math.min(1000 * 2 ** attempt, 8000);
+}
+
+/**
+ * Resend allows 10 requests a second, and a run of single-address retries
+ * outpaces that on its own — measured at ~11.6/s. A 429'd recipient is a
+ * recipient who never got the email, so wait out the window and try again
+ * rather than reporting a rate limit as a delivery failure.
+ */
+async function resendFetch(apiKey: string, path: string, payload: unknown): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`https://api.resend.com${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
+    await new Promise((r) => setTimeout(r, retryDelayMs(res, attempt)));
+  }
+}
+
 async function resendSend(
   apiKey: string,
   payload: {
@@ -79,14 +116,7 @@ async function resendSend(
     attachments?: Array<{ filename: string; content: string }>;
   },
 ): Promise<{ id?: string; error?: string }> {
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
+  const res = await resendFetch(apiKey, '/emails', payload);
   const data = (await res.json()) as { id?: string };
   if (!res.ok) return { error: resendError(data, res.status) };
   return { id: data.id };
@@ -106,14 +136,7 @@ async function resendBatch(
 ): Promise<
   { ok: true; results: Array<{ id?: string }> } | { ok: false; error: string; status: number }
 > {
-  const res = await fetch('https://api.resend.com/emails/batch', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(emails),
-  });
+  const res = await resendFetch(apiKey, '/emails/batch', emails);
   const data = (await res.json()) as { data?: Array<{ id?: string }> };
   if (!res.ok) return { ok: false, error: resendError(data, res.status), status: res.status };
   return { ok: true, results: data.data ?? [] };

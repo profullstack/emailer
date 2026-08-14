@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/emailer",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Mass emailer for Profullstack apps \u2014 Resend batch API with SMTP fallback",
   "type": "module",
   "main": "./dist/index.js",

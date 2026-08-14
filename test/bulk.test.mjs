@@ -12,10 +12,11 @@ function stubFetch(handler) {
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init.body);
     calls.push({ url, body });
-    const { status, json } = handler(url, body);
+    const { status, json, headers = {} } = handler(url, body);
     return {
       ok: status >= 200 && status < 300,
       status,
+      headers: { get: (name) => headers[name] ?? null },
       json: async () => json,
     };
   };
@@ -75,6 +76,37 @@ test('a non-422 batch failure is not retried one address at a time', async () =>
   assert.equal(res.failed, 2);
   assert.equal(res.errors[0].error, 'restricted_api_key: This API key is restricted.');
   assert.equal(calls.filter((c) => c.url === SEND_URL).length, 0, 'no per-address retry storm');
+});
+
+test('a rate-limited request is waited out, not reported as a delivery failure', async () => {
+  let seen = 0;
+  const calls = stubFetch(() => {
+    seen++;
+    // 429 twice, then succeed — the sender must not give up on the recipient.
+    return seen <= 2
+      ? { status: 429, json: { message: 'Too many requests' }, headers: { 'ratelimit-reset': '0' } }
+      : { status: 200, json: { data: [{ id: 'ok' }] } };
+  });
+
+  const res = await emailer().sendBulk(bulk(['a@real.test']));
+
+  assert.equal(res.sent, 1);
+  assert.equal(res.failed, 0);
+  assert.equal(calls.length, 3, 'retried until the window cleared');
+});
+
+test('rate limiting gives up eventually rather than looping forever', async () => {
+  const calls = stubFetch(() => ({
+    status: 429,
+    json: { message: 'Too many requests' },
+    headers: { 'ratelimit-reset': '0' },
+  }));
+
+  const res = await emailer().sendBulk(bulk(['a@real.test']));
+
+  assert.equal(res.failed, 1);
+  assert.match(res.errors[0].error, /Too many requests/);
+  assert.equal(calls.length, 6, 'initial attempt plus RATE_LIMIT_RETRIES');
 });
 
 test('a short data array counts the dropped recipients as failures', async () => {
