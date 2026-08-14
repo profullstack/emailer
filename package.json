@@ -1,7 +1,7 @@
 {
   "name": "@profullstack/emailer",
-  "version": "1.0.1",
-  "description": "Mass emailer for Profullstack apps — Resend batch API with SMTP fallback",
+  "version": "1.0.3",
+  "description": "Mass emailer for Profullstack apps \u2014 Resend batch API with SMTP fallback",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "build": "npx tsc -p tsconfig.build.json",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "node --test 'test/**/*.test.mjs'"
   },
   "keywords": [
     "email",

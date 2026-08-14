@@ -1,38 +1,68 @@
-async function resendSend(apiKey, payload) {
-    const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-    });
-    const data = (await res.json());
-    if (!res.ok) {
-        const msg = typeof data.error === 'string'
-            ? data.error
-            : data.error?.message ?? `HTTP ${res.status}`;
-        return { error: msg };
+/**
+ * Resend reports failures as a flat `{ statusCode, name, message }` body, not
+ * the `{ error: ... }` envelope. Reading only `error` turned every rejection
+ * into a bare `HTTP 422`, which hides the one thing worth knowing — why.
+ */
+function resendError(body, status) {
+    const data = (body ?? {});
+    const envelope = typeof data.error === 'string' ? data.error : data.error?.message;
+    const flat = data.message;
+    const detail = envelope ?? flat;
+    if (!detail)
+        return `HTTP ${status}`;
+    const name = typeof data.error === 'object' ? data.error?.name : data.name;
+    return name ? `${name}: ${detail}` : detail;
+}
+const RATE_LIMIT_RETRIES = 5;
+/** How long to wait before a retry, preferring what the response tells us. */
+function retryDelayMs(res, attempt) {
+    // An explicit `0` means "the window is already clear", which is different
+    // from the header being absent — so check for the header before converting,
+    // or `Number(null)` would silently read as a zero-second wait.
+    for (const name of ['retry-after', 'ratelimit-reset']) {
+        const raw = res.headers?.get(name);
+        if (raw === null || raw === undefined || raw === '')
+            continue;
+        const seconds = Number(raw);
+        if (Number.isFinite(seconds) && seconds >= 0)
+            return seconds * 1000;
     }
+    return Math.min(1000 * 2 ** attempt, 8000);
+}
+/**
+ * Resend allows 10 requests a second, and a run of single-address retries
+ * outpaces that on its own — measured at ~11.6/s. A 429'd recipient is a
+ * recipient who never got the email, so wait out the window and try again
+ * rather than reporting a rate limit as a delivery failure.
+ */
+async function resendFetch(apiKey, path, payload) {
+    for (let attempt = 0;; attempt++) {
+        const res = await fetch(`https://api.resend.com${path}`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+        if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES)
+            return res;
+        await new Promise((r) => setTimeout(r, retryDelayMs(res, attempt)));
+    }
+}
+async function resendSend(apiKey, payload) {
+    const res = await resendFetch(apiKey, '/emails', payload);
+    const data = (await res.json());
+    if (!res.ok)
+        return { error: resendError(data, res.status) };
     return { id: data.id };
 }
 async function resendBatch(apiKey, emails) {
-    const res = await fetch('https://api.resend.com/emails/batch', {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(emails),
-    });
+    const res = await resendFetch(apiKey, '/emails/batch', emails);
     const data = (await res.json());
-    if (!res.ok) {
-        const msg = typeof data.error === 'string'
-            ? data.error
-            : data.error?.message ?? `HTTP ${res.status}`;
-        return emails.map(() => ({ error: msg }));
-    }
-    return (data.data ?? []).map((r) => ({ id: r.id }));
+    if (!res.ok)
+        return { ok: false, error: resendError(data, res.status), status: res.status };
+    return { ok: true, results: data.data ?? [] };
 }
 export class Emailer {
     constructor(config) {
@@ -87,14 +117,42 @@ export class Emailer {
                     reply_to: opts.replyTo,
                     headers: opts.headers,
                 }));
-                const results = await resendBatch(this.config.resendApiKey, emails);
-                for (let j = 0; j < results.length; j++) {
-                    if (results[j].error) {
-                        result.failed++;
-                        result.errors.push({ email: batch[j], error: results[j].error });
+                const batchRes = await resendBatch(this.config.resendApiKey, emails);
+                if (batchRes.ok) {
+                    for (let j = 0; j < batch.length; j++) {
+                        // Resend answers with one id per email, in order. A short array
+                        // means those recipients were dropped, so count them as failures
+                        // instead of silently shrinking the tally.
+                        if (batchRes.results[j]?.id) {
+                            result.sent++;
+                        }
+                        else {
+                            result.failed++;
+                            result.errors.push({ email: batch[j], error: 'Resend returned no id' });
+                        }
                     }
-                    else {
-                        result.sent++;
+                }
+                else if (batchRes.status === 422) {
+                    // Resend validates a batch as a unit: one unusable address rejects
+                    // every email in the request. Retry singly so the good addresses
+                    // still go out and the error lands on the one that caused it.
+                    for (let j = 0; j < emails.length; j++) {
+                        const single = await resendSend(this.config.resendApiKey, emails[j]);
+                        if (single.error) {
+                            result.failed++;
+                            result.errors.push({ email: batch[j], error: single.error });
+                        }
+                        else {
+                            result.sent++;
+                        }
+                    }
+                }
+                else {
+                    // Auth, rate-limit or server errors apply to the whole request;
+                    // retrying one at a time would just repeat them 100 times.
+                    for (const email of batch) {
+                        result.failed++;
+                        result.errors.push({ email, error: batchRes.error });
                     }
                 }
                 if (delayMs > 0 && i + batchSize < opts.to.length) {
