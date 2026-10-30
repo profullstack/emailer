@@ -3,6 +3,13 @@ name: Publish to npm
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref whose package version should be published
+        required: true
+        default: master
+        type: string
 
 permissions:
   contents: read
@@ -14,16 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@11.5.1
       - run: npm ci
       - run: npm test
       - run: npm run build
       - name: Check tag version
+        if: github.event_name == 'push'
         run: test "${GITHUB_REF_NAME#v}" = "$(node -p 'require("./package.json").version')"
-      - run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --access public

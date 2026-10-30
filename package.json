@@ -28,6 +28,10 @@
     "newsletter"
   ],
   "author": "Profullstack Inc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/profullstack/emailer.git"
+  },
   "license": "MIT",
   "publishConfig": {
     "access": "public"
