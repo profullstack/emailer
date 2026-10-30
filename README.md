@@ -1,6 +1,6 @@
 # @profullstack/emailer
 
-Mass emailer for Profullstack apps. Wraps [Resend](https://resend.com)'s batch API with a simple interface for sending bulk emails. Zero runtime dependencies.
+Email delivery for Profullstack apps. Uses the [Resend API](https://resend.com) for transactional and bulk email. It never sends through SMTP or Gmail, and has no SMTP fallback. Zero runtime dependencies.
 
 ## Installation
 

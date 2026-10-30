@@ -1,7 +1,7 @@
 {
   "name": "@profullstack/emailer",
-  "version": "1.0.3",
-  "description": "Mass emailer for Profullstack apps \u2014 Resend batch API with SMTP fallback",
+  "version": "1.0.4",
+  "description": "Resend API email delivery for Profullstack apps. Transactional and bulk sends; no SMTP or Gmail transport.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -25,7 +25,6 @@
     "email",
     "mass-emailer",
     "resend",
-    "smtp",
     "newsletter"
   ],
   "author": "Profullstack Inc",
