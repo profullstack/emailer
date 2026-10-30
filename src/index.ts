@@ -1,5 +1,6 @@
 export interface EmailerConfig {
   resendApiKey?: string;
+  /** @deprecated Compatibility-only option. SMTP is unsupported and never used as a fallback. */
   smtp?: {
     host: string;
     port: number;
